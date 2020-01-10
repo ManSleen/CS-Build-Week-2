@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { axiosWithAuth } from './util/axiosWithAuth.js';
+import data from './data/test.json';
+
+import Treasure from './components/Treasure';
 
 import './App.scss';
 import Navbar from './components/Navbar';
-import FindRoom from './components/Treasure';
 
 function App() {
   const [currentRoom, setCurrentRoom] = useState();
@@ -12,25 +14,16 @@ function App() {
   const [visited, setVisited] = useState(
     JSON.parse(localStorage.getItem('visited')) || {}
   );
-
-  const [graph, setGraph] = useState({});
+  const [path, setPath] = useState([]);
 
   useEffect(() => {
     const init = () => {
-      return (
-        axiosWithAuth()
-          .get('adv/init/')
-          .then(res => {
-            setCurrentRoom(res.data);
-          })
-          // .then(() => {
-          //   axiosWithAuth()
-          //     .post('adv/status/', {})
-          //     .then(res => console.log(res))
-          //     .catch(err => console.log(err));
-          // })
-          .catch(err => console.log(err))
-      );
+      return axiosWithAuth()
+        .get('adv/init/')
+        .then(res => {
+          setCurrentRoom(res.data);
+        })
+        .catch(err => console.log(err));
     };
     setVisited(JSON.parse(localStorage.getItem('visited')));
     init();
@@ -60,6 +53,11 @@ function App() {
     }
   }, [currentRoom]);
 
+  const directionUpdater = direction => {
+    setPath([...path, direction]);
+  };
+
+  // Map Functions ===================================================================
   const modifyExitToObject = startingRoom => {
     const copyOfstartingRoom = { ...startingRoom };
     console.log(copyOfstartingRoom);
@@ -71,10 +69,21 @@ function App() {
     return copyOfstartingRoom;
   };
 
-  const move = async (direction, curr, visited) => {
-    const dirObj = {
-      direction: direction
-    };
+  const move = async (direction, curr, visited, map) => {
+    let nextRoom = findNextRoom(curr.room_id, map, direction);
+
+    let dirObj;
+
+    if (nextRoom) {
+      dirObj = {
+        direction: direction,
+        next_room_id: `${nextRoom}`
+      };
+    } else {
+      dirObj = {
+        direction: direction
+      };
+    }
 
     let prev;
     let current;
@@ -88,50 +97,20 @@ function App() {
     } catch (error) {
       console.log(error);
     }
-
+    console.log('prev: ', prev, 'current: ', current);
     return [prev, current];
   };
 
-  // ====================
   const autoMove = (cd, dir, curr, visited) => {
     const time = cd * 1000;
 
     return new Promise(resolve => {
       setTimeout(async () => {
-        const [prev, current] = await move(dir, curr, visited);
+        const [prev, current] = await move(dir, curr, visited, data);
 
         resolve([prev, current]);
       }, time); // ms
     });
-  };
-
-  // TODO! ******************
-  // // Get treasure
-  // const getTreasure = () => {
-  //   return axiosWithAuth().post('adv/take/')
-  // }
-
-  // ====================
-  const postVisited = async visitedNode => {
-    try {
-      await axios.post(
-        'https://cs23-teamz-treasure-hunt.herokuapp.com/visited',
-        visitedNode
-      );
-    } catch (error) {
-      console.log("You've visited that area before");
-    }
-  };
-
-  const updateVisited = async updates => {
-    try {
-      await axios.put(
-        `https://cs23-teamz-treasure-hunt.herokuapp.com/visited/${updates.room_id}`,
-        updates
-      );
-    } catch (error) {
-      console.log(error);
-    }
   };
 
   // Checks entire 'visited' graph for unexplored exits
@@ -159,7 +138,29 @@ function App() {
     }
     return unexplored;
   };
-  // console.log('graph is not complete? ', graphIsNotComplete(visited));
+
+  // Returns true if both booleans are true
+  const checkIfBothTrue = (bool1, bool2) => {
+    let status = false;
+    if (bool1 === true && bool2 === true) {
+      status = true;
+    }
+    return status;
+  };
+
+  const delay = seconds =>
+    new Promise(resolver => setTimeout(() => resolver(), seconds * 1000));
+
+  const getStatus = async () => {
+    await delay(1);
+    try {
+      let res = await axiosWithAuth().post('adv/status/');
+      console.log('status res: ', res);
+      return res.data;
+    } catch ({ message }) {
+      console.log(message);
+    }
+  };
 
   const wiseExplorerReverse = async (direction, curr, visited) => {
     const payload = {
@@ -181,15 +182,108 @@ function App() {
     return [prev, current];
   };
 
-  const checkIfBothTrue = (bool1, bool2) => {
-    let status = false;
-    if (bool1 === true && bool2 === true) {
-      status = true;
+  // Get current room from map, find out what room is on other side of the direction
+  const findNextRoom = (currentRoomId, map, direction) => {
+    let nextRoom;
+    for (const exit in map[currentRoomId].exits) {
+      if (exit === direction) {
+        nextRoom = map[currentRoomId].exits[exit];
+        break;
+      }
     }
-    return status;
+    return nextRoom;
   };
 
-  const bfs = target => {};
+  // Find the direction connecting 2 rooms
+  const findNextDirection = (currentRoomId, map, nextRoomId) => {
+    let nextDirection;
+    for (const exit in map[currentRoomId].exits) {
+      if (map[currentRoomId].exits[exit] === nextRoomId) {
+        nextDirection = exit;
+        break;
+      }
+    }
+    return nextDirection;
+  };
+
+  // Treasure Functions ===================================================================
+  const collectTreasure = async room => {
+    // Check if room
+    if (
+      room.items.includes(
+        'shiny treasure' || 'tiny treasure' || 'small treasure'
+      )
+    ) {
+      try {
+        let status = await getStatus();
+        console.log(status);
+        if (status.encumbrance === status.strength) {
+          return "You can't carry any more stuff right now.";
+        } else {
+          room.items.forEach(item => {
+            const treasureObj = { name: item };
+            console.log('treasureObj', treasureObj);
+            takeTreasure(treasureObj);
+          });
+        }
+      } catch (error) {
+        console.log(error);
+      }
+    }
+  };
+
+  const examine = async thing => {
+    try {
+      const res = await axiosWithAuth().post('adv/examine/', thing);
+      return res.data;
+    } catch (error) {
+      console.log(error);
+    }
+  };
+
+  const takeTreasure = treasureObj => {
+    return axiosWithAuth()
+      .post('adv/take/', treasureObj)
+      .then(res => console.log(res))
+      .catch(err => console.log(err));
+  };
+
+  const sellTreasure = treasureObj => {
+    return axiosWithAuth()
+      .post('adv/sell/', treasureObj)
+      .then(res => console.log(res))
+      .catch(err => console.log(err));
+  };
+
+  const confirmSale = treasureObj => {
+    treasureObj['confirm'] = 'yes';
+    return axiosWithAuth()
+      .post('adv/sell/', treasureObj)
+      .then(res => console.log(res))
+      .catch(err => console.log(err));
+  };
+
+  const postVisited = async visitedNode => {
+    try {
+      await axios.post(
+        'https://cs23-teamz-treasure-hunt.herokuapp.com/visited',
+        visitedNode
+      );
+    } catch (error) {
+      console.log("You've visited that area before");
+    }
+  };
+
+  const updateVisited = async updates => {
+    try {
+      await axios.put(
+        `https://cs23-teamz-treasure-hunt.herokuapp.com/visited/${updates.room_id}`,
+        updates
+      );
+    } catch (error) {
+      console.log(error);
+    }
+  };
 
   const traverseMap = async startingRoom => {
     const opposites = { n: 's', s: 'n', e: 'w', w: 'e', '?': '?' };
@@ -246,6 +340,8 @@ function App() {
         visitedGraph
       );
 
+      collectTreasure(current);
+
       // graph to visited
       const prevObj = { ...prev };
       prevObj.exits[dir] = current.room_id;
@@ -293,6 +389,8 @@ function App() {
             current,
             visitedGraph
           );
+          console.log('current: ', current);
+          collectTreasure(currentFromMove);
 
           stack.push([opposites[unexploredRoom], currentFromMove]);
           console.log('stack inside while: ', stack);
@@ -347,27 +445,9 @@ function App() {
       console.log(error);
     }
   };
-  /**
- * 
-      queue = Queue()
-      visited = set()
-      queue.enqueue(starting_vertex)
-      while queue.size() > 0:
-          current_node = queue.dequeue()
-          if current_node not in visited:
-              visited.add(current_node)
-              print("Node: ", current_node)
-              for neighbor in self.get_neighbors(current_node):
-                  queue.enqueue(neighbor)
-
- * 
- */
-  // const stackFromLocal = JSON.parse(localStorage.getItem('stack'));
-  // console.log(stackFromLocal[stackFromLocal.length - 2][0]);
   return (
     <div className="App">
       <Navbar />
-
       {currentRoom && (
         <div>
           {currentRoom.title}
@@ -391,7 +471,6 @@ function App() {
             : 'No items in room'}
         </div>
       )}
-
       <div>
         <button
           onClick={() =>
@@ -423,9 +502,18 @@ function App() {
         </button>
       </div>
       <button onClick={() => traverseMap(currentRoom)}>TRAVERSE!</button>
-      <br />
-      <br />
-      <FindRoom currentRoom={currentRoom} />
+      <button onClick={() => collectTreasure(currentRoom)}>
+        COLLECT TREASURE!
+      </button>
+      <div>
+        <br />
+        <br />
+        <Treasure
+          findNextDirection={findNextDirection}
+          currentRoom={currentRoom}
+          directionUpdater={directionUpdater}
+        />
+      </div>
     </div>
   );
 }
